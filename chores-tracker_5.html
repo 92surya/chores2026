@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Chores</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232F5D53'/%3E%3Cpath d='M18 33 L28 43 L47 21' stroke='%23FFFFFF' stroke-width='7' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E">
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%232F5D53'/%3E%3Cpath d='M18 33 L28 43 L47 21' stroke='%23FFFFFF' stroke-width='7' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E">
 <script src="https://accounts.google.com/gsi/client" async defer></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -289,6 +291,32 @@
     color:#fff;
   }
   .view-toggle-btn svg{width:16px; height:16px;}
+
+  /* ---------- Section expand/collapse toolbar ---------- */
+  .section-toolbar{
+    display:flex;
+    gap:8px;
+    margin:-10px 0 18px;
+  }
+  .section-toolbar-btn{
+    font-family:var(--font-mono);
+    font-size:11.5px;
+    letter-spacing:0.3px;
+    text-transform:uppercase;
+    padding:6px 12px;
+    border-radius:var(--radius-pill);
+    border:1px solid var(--line);
+    background:var(--surface);
+    color:var(--ink-soft);
+    cursor:pointer;
+    transition:all .12s ease;
+  }
+  .section-toolbar-btn:hover{border-color:var(--ink-soft);}
+  .section-toolbar-btn.active{
+    background:var(--ink);
+    border-color:var(--ink);
+    color:#fff;
+  }
 
   /* ---------- Sections grid ---------- */
   .sections-container{
@@ -793,6 +821,7 @@
       padding:7px 12px;
     }
     .view-toggle{align-self:flex-start;}
+    .section-toolbar{margin:-4px 0 14px;}
 
     .sections-container{
       grid-template-columns:1fr;
@@ -866,6 +895,11 @@
         </svg>
       </button>
     </div>
+  </div>
+
+  <div class="section-toolbar" id="section-toolbar">
+    <button class="section-toolbar-btn" id="expand-all-btn" type="button" aria-pressed="false">Expand all</button>
+    <button class="section-toolbar-btn active" id="collapse-all-btn" type="button" aria-pressed="true">Collapse all</button>
   </div>
 
   <div class="sections-container" id="sections-container">
@@ -1024,6 +1058,7 @@
   var editingTaskId = null;
   var editingSectionId = null;
   var defaultSectionIdForModal = null;
+  var sectionsExpanded = false; // landing-page section cards start collapsed
 
   // ---------- Date helpers ----------
   function pad(n){ return n < 10 ? "0"+n : ""+n; }
@@ -1062,6 +1097,13 @@
     var days = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"];
     var months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
     return days[d.getDay()] + ", " + d.getDate() + " " + months[d.getMonth()];
+  }
+
+  var MONTHS_UPPER = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
+  function formatYyyyMonDd(dateStr){
+    if(!dateStr) return "";
+    var d = parseISO(dateStr);
+    return d.getFullYear() + "-" + MONTHS_UPPER[d.getMonth()] + "-" + pad(d.getDate());
   }
 
   function taskStatus(task){
@@ -1503,6 +1545,11 @@
         dueDate: "", recurring: false, interval: 1, unit: "week", done: false
       }
     ];
+    state.tasks.forEach(function(t){
+      t.createdAt = todayISO();
+      t.completedAt = t.completedAt || null;
+      t.completions = t.completions || [];
+    });
   }
 
   function uid(){
@@ -1517,6 +1564,20 @@
       btn.classList.toggle("active", isActive);
       btn.setAttribute("aria-pressed", isActive ? "true" : "false");
     });
+
+    var toolbar = document.getElementById("section-toolbar");
+    if(toolbar) toolbar.classList.toggle("hidden", currentFilter !== "all");
+    var expandBtn = document.getElementById("expand-all-btn");
+    var collapseBtn = document.getElementById("collapse-all-btn");
+    if(expandBtn){
+      expandBtn.classList.toggle("active", sectionsExpanded);
+      expandBtn.setAttribute("aria-pressed", sectionsExpanded ? "true" : "false");
+    }
+    if(collapseBtn){
+      collapseBtn.classList.toggle("active", !sectionsExpanded);
+      collapseBtn.setAttribute("aria-pressed", !sectionsExpanded ? "true" : "false");
+    }
+
     renderSummary();
     renderSections();
   }
@@ -1558,6 +1619,24 @@
     return a.title.localeCompare(b.title);
   }
 
+  // Recurring chores don't carry a permanent "done" state (checking them off just
+  // reschedules the next occurrence), so their completion history is tracked
+  // separately in task.completions and surfaced here as read-only Done-tab rows.
+  function completionRecordsForSection(sectionId){
+    var records = [];
+    state.tasks.forEach(function(t){
+      if(t.sectionId !== sectionId || !t.recurring || !t.completions) return;
+      t.completions.forEach(function(dateStr){
+        records.push({
+          id: t.id + "|" + dateStr,
+          title: t.title + " " + formatYyyyMonDd(dateStr),
+          date: dateStr
+        });
+      });
+    });
+    return records;
+  }
+
   function renderSections(){
     var container = document.getElementById("sections-container");
     container.innerHTML = "";
@@ -1574,12 +1653,29 @@
     }
 
     var anyVisible = false;
+    // The landing page (the "All" filter) shows minimized section cards: collapsed
+    // by default (0 chores shown), or up to 2 per section once expanded. Other
+    // filter tabs (Overdue/Today/Upcoming/Done) always show the full matching list.
+    var collapseMode = currentFilter === "all";
 
     state.sections.forEach(function(section, idx){
       var tasks = visibleTasksForSection(section.id);
       var totalInSection = state.tasks.filter(function(t){ return t.sectionId === section.id; }).length;
 
-      if(currentFilter !== "all" && tasks.length === 0) {
+      var rows = tasks.map(function(t){ return { type: "task", task: t, sortDate: t.completedAt || "" }; });
+      if(currentFilter === "done"){
+        completionRecordsForSection(section.id).forEach(function(r){
+          rows.push({ type: "record", record: r, sortDate: r.date });
+        });
+        rows.sort(function(a, b){
+          if(a.sortDate === b.sortDate) return 0;
+          return a.sortDate < b.sortDate ? 1 : -1; // most recently completed first
+        });
+      }
+
+      var combinedCount = rows.length;
+
+      if(currentFilter !== "all" && combinedCount === 0) {
         // still show empty sections when filter is "all"; otherwise skip if nothing matches
         return;
       }
@@ -1597,7 +1693,7 @@
       head.innerHTML =
         '<div class="section-title-row">' +
           '<h3 class="section-title">' + escapeHtml(section.name) + '</h3>' +
-          '<span class="section-count">' + totalInSection + (totalInSection === 1 ? " chore" : " chores") + '</span>' +
+          '<span class="section-count">' + totalInSection + '</span>' +
         '</div>' +
         '<div class="section-actions">' +
           '<button class="icon-btn" data-edit-section="' + section.id + '" aria-label="Edit section" title="Edit section">✎</button>' +
@@ -1607,14 +1703,20 @@
       var list = document.createElement("div");
       list.className = "task-list";
 
-      if(tasks.length === 0){
+      var visibleRows = collapseMode ? (sectionsExpanded ? rows.slice(0, 2) : []) : rows;
+
+      if(visibleRows.length === 0){
         var note = document.createElement("p");
         note.className = "empty-tasks-note";
-        note.textContent = currentFilter === "all" ? "Nothing here yet." : "Nothing matches this filter.";
+        if(combinedCount === 0){
+          note.textContent = currentFilter === "all" ? "Nothing here yet." : "Nothing matches this filter.";
+        } else {
+          note.textContent = 'Collapsed — tap "Expand all" to preview.';
+        }
         list.appendChild(note);
       } else {
-        tasks.forEach(function(task){
-          list.appendChild(renderTaskRow(task));
+        visibleRows.forEach(function(row){
+          list.appendChild(row.type === "record" ? renderCompletionRow(row.record) : renderTaskRow(row.task));
         });
       }
       card.appendChild(list);
@@ -1636,7 +1738,7 @@
         overdue: ["Nothing overdue", "You're on top of everything overdue. Nice."],
         today: ["Nothing due today", "Nothing scheduled for today."],
         upcoming: ["Nothing upcoming", "No chores scheduled ahead."],
-        done: ["Nothing done yet", "Completed one-off chores will show up here."]
+        done: ["Nothing done yet", "Completed chores will show up here."]
       }[currentFilter] || ["Nothing here", ""];
       empty.innerHTML = "<h2>" + msg[0] + "</h2><p>" + msg[1] + "</p>";
       container.appendChild(empty);
@@ -1693,12 +1795,64 @@
     }
     meta.appendChild(dateBadge);
 
+    if(status === "done" && task.completedAt){
+      var completedBadge = document.createElement("span");
+      completedBadge.className = "badge";
+      completedBadge.textContent = formatYyyyMonDd(task.completedAt);
+      meta.appendChild(completedBadge);
+    }
+
     if(task.recurring){
       var repBadge = document.createElement("span");
       repBadge.className = "badge repeat";
       repBadge.innerHTML = "↻ every " + task.interval + " " + task.unit + (task.interval > 1 ? "s" : "");
       meta.appendChild(repBadge);
     }
+
+    main.appendChild(meta);
+    row.appendChild(main);
+
+    return row;
+  }
+
+  // Read-only Done-tab row for one past completion of a recurring chore.
+  // The chore name carries the completion date suffix so repeat completions
+  // of the same chore are distinguishable from one another.
+  function renderCompletionRow(record){
+    var row = document.createElement("div");
+    row.className = "task-row is-done";
+
+    var cbWrap = document.createElement("div");
+    cbWrap.className = "checkbox-wrap";
+    var cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.className = "chore-checkbox";
+    cb.checked = true;
+    cb.disabled = true;
+    cb.setAttribute("aria-label", record.title + " completed");
+    cbWrap.appendChild(cb);
+    row.appendChild(cbWrap);
+
+    var main = document.createElement("div");
+    main.className = "task-main";
+
+    var titleEl = document.createElement("span");
+    titleEl.className = "task-title";
+    titleEl.textContent = record.title;
+    main.appendChild(titleEl);
+
+    var meta = document.createElement("div");
+    meta.className = "task-meta";
+
+    var doneBadge = document.createElement("span");
+    doneBadge.className = "badge";
+    doneBadge.textContent = "Done";
+    meta.appendChild(doneBadge);
+
+    var dateBadge = document.createElement("span");
+    dateBadge.className = "badge";
+    dateBadge.textContent = formatYyyyMonDd(record.date);
+    meta.appendChild(dateBadge);
 
     main.appendChild(meta);
     row.appendChild(main);
@@ -1720,9 +1874,12 @@
     if(task.recurring){
       var base = (task.dueDate && task.dueDate <= todayISO()) ? todayISO() : (task.dueDate || todayISO());
       task.dueDate = addInterval(base, task.interval, task.unit);
+      task.completions = task.completions || [];
+      task.completions.push(todayISO());
       showToast("Nice! Next: " + formatDisplayDate(task.dueDate));
     } else {
       task.done = !task.done;
+      task.completedAt = task.done ? todayISO() : null;
       showToast(task.done ? "Marked done" : "Marked not done");
     }
     saveState();
@@ -1848,7 +2005,8 @@
     } else {
       state.tasks.push({
         id: uid(), sectionId: sectionId, title: title, notes: notes,
-        dueDate: dueDate, recurring: recurring, interval: interval, unit: unit, done: false
+        dueDate: dueDate, recurring: recurring, interval: interval, unit: unit, done: false,
+        createdAt: todayISO(), completedAt: null, completions: []
       });
     }
 
@@ -2045,6 +2203,15 @@
       if(!btn) return;
       currentView = btn.dataset.view;
       saveState();
+      render();
+    });
+
+    document.getElementById("expand-all-btn").addEventListener("click", function(){
+      sectionsExpanded = true;
+      render();
+    });
+    document.getElementById("collapse-all-btn").addEventListener("click", function(){
+      sectionsExpanded = false;
       render();
     });
 
